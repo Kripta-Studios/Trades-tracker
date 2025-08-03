@@ -526,8 +526,9 @@ async def on_command_error(ctx, error):
 
 @bot.event
 async def on_ready():
-    print(f"Estamos dentro {bot.user}")
+    print(f"Logged in {bot.user}")
     if not close_expiring_options.is_running():
         close_expiring_options.start()
+
 
 bot.run(DISCORD_TOKEN)
