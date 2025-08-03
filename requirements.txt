@@ -1,0 +1,4 @@
+discord.py
+tastytrade
+dotenv
+db-sqlite3
