@@ -67,7 +67,7 @@ def build_embed(ctx, symbol, price, market, direction_label, extra="", is_long=T
 
     now_est = datetime.datetime.now(ZoneInfo("America/New_York"))
     formatted_time = now_est.strftime("%Y-%m-%d %I:%M %p EST")
-    footer_text = f"\n{formatted_time}\nTrade Tracker Bot by jinskukripta"
+    footer_text = f"\n{formatted_time}\nTrade Tracker Bot"
 
     embed.set_footer(text=footer_text)
     return embed
@@ -344,7 +344,7 @@ async def error_type(ctx, error):
                        {cmd} /ES @ M
                        {cmd} TSLA @ 342.43""")
 
-@bot.command(name="stats")
+@bot.command(name="#stats")
 async def stats_command(ctx, *, args):
     try:
         # Parse arguments: expecting "<username> <timeframe> <status>"
@@ -505,7 +505,7 @@ async def stats_command(ctx, *, args):
             color=discord.Color.blue()
         )
         now_est = datetime.datetime.now(ZoneInfo("America/New_York"))
-        embed.set_footer(text=f"{now_est.strftime('%Y-%m-%d %I:%M %p EST')}\nTrade Tracker Bot by jinskukripta")
+        embed.set_footer(text=f"{now_est.strftime('%Y-%m-%d %I:%M %p EST')}\nTrade Tracker Bot")
         await ctx.send(embed=embed)
 
     except Exception as e:
@@ -597,7 +597,7 @@ async def on_command_error(ctx, error):
 
 @bot.event
 async def on_ready():
-    print(f"Estamos dentro {bot.user}")
+    print(f"Logged in {bot.user}")
     if not close_expiring_options.is_running():
         close_expiring_options.start()
 
