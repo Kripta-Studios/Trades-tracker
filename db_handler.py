@@ -20,6 +20,11 @@ def initialize_db():
             strike TEXT,
             type TEXT,
             price REAL NOT NULL,
+            qty INTEGER NOT NULL DEFAULT 1,
+            avg_down1 REAL,
+            avg_down1_qty INTEGER,
+            avg_down2 REAL,
+            avg_down2_qty INTEGER,
             trim1 REAL,
             trim2 REAL,
             trim3 REAL,
@@ -30,6 +35,23 @@ def initialize_db():
             closed_timestamp TEXT
         )
         ''')
+        # Add new columns if they don't exist (for migration)
+        try:
+            cursor.execute('ALTER TABLE trades ADD COLUMN avg_down1 REAL')
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute('ALTER TABLE trades ADD COLUMN avg_down1_qty INTEGER')
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute('ALTER TABLE trades ADD COLUMN avg_down2 REAL')
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute('ALTER TABLE trades ADD COLUMN avg_down2_qty INTEGER')
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
 
 # Initialize the database when the module is loaded
@@ -62,7 +84,7 @@ def is_trade_open(user, ticker, date=None, strike=None, type_opt=None):
         print(f"Database error in is_trade_open: {e}")
         return False
 
-def open_trade(user, ticker, price, date=None, strike=None, type_opt=None):
+def open_trade(user, ticker, price, qty=1, date=None, strike=None, type_opt=None):
     """Open a new trade and return the opening price and None for closing price."""
     try:
         if is_trade_open(user, ticker, date, strike, type_opt):
@@ -72,13 +94,75 @@ def open_trade(user, ticker, price, date=None, strike=None, type_opt=None):
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-            INSERT INTO trades (user, ticker, date, strike, type, price, opened, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-            ''', (user, ticker, date, strike, type_opt, price, now))
+            INSERT INTO trades (user, ticker, date, strike, type, price, qty, opened, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+            ''', (user, ticker, date, strike, type_opt, price, qty, now))
             conn.commit()
         return (price, None)
     except sqlite3.Error as e:
         print(f"Database error in open_trade: {e}")
+        return None
+
+def avg_down_trade(user, ticker, avg_price, avg_qty, date=None, strike=None, type_opt=None):
+    """Add an average-down price and quantity to the next available avg_down column."""
+    try:
+        if not is_trade_open(user, ticker, date, strike, type_opt):
+            return None  # No open trade found
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            query_select = '''
+            SELECT id, price, qty, avg_down1, avg_down1_qty, avg_down2, avg_down2_qty 
+            FROM trades 
+            WHERE user=? AND ticker=? AND opened=1
+            '''
+            params_select = [user, ticker]
+
+            if date:
+                query_select += " AND date=?"
+                params_select.append(date)
+            if strike:
+                query_select += " AND strike=?"
+                params_select.append(strike)
+            if type_opt:
+                query_select += " AND type=?"
+                params_select.append(type_opt)
+
+            cursor.execute(query_select, params_select)
+            result = cursor.fetchone()
+
+            if not result:
+                return None  # No open trade found
+
+            trade_id, orig_price, orig_qty, avg_down1, avg_down1_qty, avg_down2, avg_down2_qty = result
+            avg_count = sum(1 for avg in [avg_down1, avg_down2] if avg is not None)
+
+            if avg_count >= 2:
+                return False  # Maximum avg-downs reached
+
+            # Determine the next avg_down column
+            avg_column = f"avg_down{avg_count + 1}"
+            avg_qty_column = f"avg_down{avg_count + 1}_qty"
+            query_update = f'''
+            UPDATE trades SET {avg_column}=?, {avg_qty_column}=? WHERE id=?
+            '''
+            cursor.execute(query_update, (avg_price, avg_qty, trade_id))
+            conn.commit()
+
+            # Calculate new average entry price
+            prices = [(orig_price, orig_qty)]
+            if avg_down1 is not None:
+                prices.append((avg_down1, avg_down1_qty))
+            if avg_down2 is not None:
+                prices.append((avg_down2, avg_down2_qty))
+            prices.append((avg_price, avg_qty))
+            
+            total_qty = sum(q for _, q in prices)
+            avg_entry_price = sum(p * q for p, q in prices) / total_qty if total_qty > 0 else orig_price
+
+            return (avg_entry_price, avg_count + 1)
+    except sqlite3.Error as e:
+        print(f"Database error in avg_down_trade: {e}")
         return None
 
 def trim_trade(user, ticker, trim_price, date=None, strike=None, type_opt=None):
@@ -139,7 +223,8 @@ def close_trade(user, ticker, closing_price, date=None, strike=None, type_opt=No
         with get_db_connection() as conn:
             cursor = conn.cursor()
             query_select = '''
-            SELECT id, price FROM trades WHERE user=? AND ticker=? AND opened=1
+            SELECT id, price, qty, avg_down1, avg_down1_qty, avg_down2, avg_down2_qty 
+            FROM trades WHERE user=? AND ticker=? AND opened=1
             '''
             params_select = [user, ticker]
 
@@ -159,7 +244,17 @@ def close_trade(user, ticker, closing_price, date=None, strike=None, type_opt=No
             if not result:
                 return None  # No open trade found
 
-            trade_id, opening_price = result
+            trade_id, orig_price, orig_qty, avg_down1, avg_down1_qty, avg_down2, avg_down2_qty = result
+
+            # Calculate average entry price
+            prices = [(orig_price, orig_qty)]
+            if avg_down1 is not None:
+                prices.append((avg_down1, avg_down1_qty))
+            if avg_down2 is not None:
+                prices.append((avg_down2, avg_down2_qty))
+            
+            total_qty = sum(q for _, q in prices)
+            avg_entry_price = sum(p * q for p, q in prices) / total_qty if total_qty > 0 else orig_price
 
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             query = '''
@@ -181,7 +276,7 @@ def close_trade(user, ticker, closing_price, date=None, strike=None, type_opt=No
             cursor.execute(query, params)
             conn.commit()
 
-        return (opening_price, closing_price)
+            return (avg_entry_price, closing_price)
     except sqlite3.Error as e:
         print(f"Database error in close_trade: {e}")
         return None
@@ -206,7 +301,9 @@ def get_trade_stats(user, timeframe, status):
                 return None  # Invalid timeframe
 
             query = '''
-            SELECT ticker, date, strike, type, price, trim1, trim2, trim3, trim4, closing_price, opened, timestamp, closed_timestamp
+            SELECT ticker, date, strike, type, price, qty, avg_down1, avg_down1_qty, 
+                   avg_down2, avg_down2_qty, trim1, trim2, trim3, trim4, 
+                   closing_price, opened, timestamp, closed_timestamp
             FROM trades WHERE user=? AND timestamp >= ?
             '''
             params = [user, start_date]
@@ -235,7 +332,7 @@ def get_open_options_expiring_today():
                 today = today[1:]
 
             query = '''
-            SELECT user, ticker, date, strike, type, price
+            SELECT user, ticker, date, strike, type, price, qty
             FROM trades
             WHERE opened=1 AND type IN ('C', 'P') AND date<=?
             '''
