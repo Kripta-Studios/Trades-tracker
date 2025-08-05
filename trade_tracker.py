@@ -6,10 +6,11 @@ from zoneinfo import ZoneInfo
 from tastytrade import Session
 from tasty_handler import tasty_data
 from utils import get_future_ticker
-from db_handler import open_trade, close_trade, trim_trade, get_trade_stats, get_open_options_expiring_today
+from db_handler import open_trade, close_trade, trim_trade, avg_down_trade, get_trade_stats, get_open_options_expiring_today, is_trade_open
 from dotenv import load_dotenv
 import os
 import math
+import asyncio
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -23,45 +24,43 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='', intents=intents, case_insensitive=True)
 
-def build_embed(ctx, symbol, price, market, direction_label, extra="", is_long=True, opening_price=None, closing_price=None, trim = ''):
+def build_embed(ctx, symbol, price, market, direction_label, extra="", is_long=True, avg_entry_price=None, closing_price=None, trim='', avg=''):
     username = ctx.author.name if ctx else "System"
     color = discord.Color.green() if is_long else discord.Color.red()
-    description = f"**{symbol}** {extra} @ **{price}** {trim} _(Market: {market})_"
+    description = f"**{symbol}** {extra} @ **{price}** {trim} {avg} _(Market: {market})_"
     
-    if opening_price is not None and closing_price is not None:
-        opening_price = float(opening_price)
-        closing_price = float(price)
-        try:
-            if is_long:  # Long trade (BTO/STC)
-                if '/' in symbol:
-                    change = closing_price - opening_price
-                    sign = "+" if change >= 0 else "-"
-                    pct = f"{sign}{abs(change):.2f}pts"
-                else:
-                    change = ((closing_price - opening_price) / opening_price) * 100
-                    sign = "+" if change >= 0 else "-"
-                    pct = f"{sign}{abs(change):.2f}%"
-            else:  # Short trade (STO/BTC)
-                if '/' in symbol:
-                    change = opening_price - closing_price
-                    sign = "+" if change >= 0 else "-"
-                    pct = f"{sign}{abs(change):.2f}pts"
-                else:
-                    change = ((opening_price - closing_price) / opening_price) * 100
-                    sign = "+" if change >= 0 else "-"
-                    pct = f"{sign}{abs(change):.2f}%"
-            color = discord.Color.green() if sign == "+" else discord.Color.red()
-            description += f"\nEntry: {opening_price:.2f} | Exit: {closing_price:.2f} | PnL: **{pct}**"
-        except ZeroDivisionError:
-            description += "\nEntry: 0 (invalid) | Exit: N/A | PnL: N/A"
-    else:
-        if opening_price is not None:
-            description += f"\nEntry: {opening_price:.2f}"
-        if closing_price is not None:
-            description += f" | Exit: {closing_price:.2f}"
+    if avg_entry_price is not None:
+        description += f"\nAvg Entry: {avg_entry_price:.2f}"
+    
+    if closing_price is not None:
+        description += f" | Exit: {closing_price:.2f}"
+        if avg_entry_price is not None:
+            try:
+                if is_long:  # Long trade (BTO/STC)
+                    if '/' in symbol:
+                        change = closing_price - avg_entry_price
+                        sign = "+" if change >= 0 else "-"
+                        pct = f"{sign}{abs(change):.2f}pts"
+                    else:
+                        change = ((closing_price - avg_entry_price) / avg_entry_price) * 100
+                        sign = "+" if change >= 0 else "-"
+                        pct = f"{sign}{abs(change):.2f}%"
+                else:  # Short trade (STO/BTC)
+                    if '/' in symbol:
+                        change = avg_entry_price - closing_price
+                        sign = "+" if change >= 0 else "-"
+                        pct = f"{sign}{abs(change):.2f}pts"
+                    else:
+                        change = ((avg_entry_price - closing_price) / avg_entry_price) * 100
+                        sign = "+" if change >= 0 else "-"
+                        pct = f"{sign}{abs(change):.2f}%"
+                color = discord.Color.green() if sign == "+" else discord.Color.red()
+                description += f" | PnL: **{pct}**"
+            except ZeroDivisionError:
+                description += " | PnL: N/A"
 
     embed = discord.Embed(
-        title=f"{ctx.invoked_with.upper() if ctx else 'STC'} {trim} Order by {username} {direction_label}",
+        title=f"{ctx.invoked_with.upper() if ctx else 'STC'} {trim}{avg} Order by {username} {direction_label}",
         description=description,
         color=color
     )
@@ -89,10 +88,21 @@ async def order_command(ctx, ticker: str, *args):
     try:
         symbol = ticker.upper()
 
-        # Check for 'trim' and adjust args
+        # Check for 'trim' or 'avg' and adjust args
         is_trim = len(args) > 0 and args[-1].lower() == "trim"
-        if is_trim:
-            args = args[:-1]  # Remove 'trim' from args
+        is_avg = len(args) > 1 and args[-2].lower() == "avg"
+        avg_qty = None
+        if is_avg:
+            try:
+                avg_qty = int(args[-1])
+                if avg_qty <= 0:
+                    raise ValueError
+                args = args[:-2]  # Remove 'avg' and quantity
+            except (ValueError, IndexError):
+                await ctx.send("Invalid quantity for AVG. Use a positive integer, e.g., 'AVG 230'.")
+                return
+        elif is_trim:
+            args = args[:-1]  # Remove 'trim'
 
         if len(args) >= 1:
             for i, arg in enumerate(args):
@@ -141,29 +151,48 @@ async def order_command(ctx, ticker: str, *args):
             if ctx.invoked_with.upper() in ["BTO", "STO"]:
                 type = "L" if ctx.invoked_with.upper() == "BTO" else "S"
                 user_name = ctx.author.name
-                result = open_trade(user_name, symbol, float(price), None, None, type)
-                if result is None:
-                    await ctx.send(f"Trade {symbol} is already opened")
-                    return
+                if is_avg:
+                    if not is_trade_open(user_name, symbol, None, None, type):
+                        await ctx.send(f"Trade {symbol} must be open to average down.")
+                        return
+                    result = avg_down_trade(user_name, symbol, float(price), avg_qty, None, None, type)
+                    if result is None:
+                        await ctx.send(f"Trade {symbol} is not open")
+                        return
+                    if result is False:
+                        await ctx.send(f"Cannot average down {symbol} more than 2 times.")
+                        return
+                    avg_entry_price, _ = result
+                    closing_price = None  # No closing price for AVG
+                else:
+                    result = open_trade(user_name, symbol, float(price), 1, None, None, type)
+                    if result is None:
+                        await ctx.send(f"Trade {symbol} is already opened")
+                        return
+                    avg_entry_price, closing_price = result
             elif ctx.invoked_with.upper() in ["STC", "BTC"]:
                 type = "S" if ctx.invoked_with.upper() == "BTC" else "L"
                 user_name = ctx.author.name
+                if is_avg:
+                    await ctx.send("AVG is not allowed for STC or BTC commands.")
+                    return
                 if is_trim:
                     result = trim_trade(user_name, symbol, float(price), None, None, type)
-                    
                     if result is None:
                         await ctx.send(f"Trade {symbol} is not open")
                         return
                     if result is False:
                         await ctx.send(f"Cannot trim {symbol} more than 4 times. Please close the trade.")
                         return
+                    avg_entry_price, _ = result
+                    closing_price = float(price)  # Use trim price as closing price for display
                 else:
                     result = close_trade(user_name, symbol, float(price), None, None, type)
                     if result is None:
                         await ctx.send(f"Trade {symbol} is not open")
                         return
-            opening_price, closing_price = result
-            await ctx.send(f"{ctx.invoked_with.upper()} {symbol} @ {price} {'trim' if is_trim else ''}")
+                    avg_entry_price, closing_price = result
+            await ctx.send(f"{ctx.invoked_with.upper()} {symbol} @ {price} {'trim' if is_trim else ''}{'AVG ' + str(avg_qty) if is_avg else ''}")
             embed = build_embed(
                 ctx,
                 symbol,
@@ -172,9 +201,10 @@ async def order_command(ctx, ticker: str, *args):
                 direction_label,
                 extra="",
                 is_long=is_long,
-                opening_price=opening_price,
-                closing_price=price,
-                trim = f"{'trim' if is_trim else ''}"
+                avg_entry_price=avg_entry_price,
+                closing_price=closing_price,
+                trim=f"{'trim' if is_trim else ''}",
+                avg=f"{'AVG ' + str(avg_qty) if is_avg else ''}"
             )
             await ctx.send(embed=embed)
             return
@@ -233,34 +263,53 @@ async def order_command(ctx, ticker: str, *args):
             direction_label, is_long = get_order_direction(ctx.invoked_with)
             if ctx.invoked_with.upper() in ["BTO", "STO"]:
                 user_name = ctx.author.name
-                result = open_trade(user_name, symbol, float(price), formatted_date,
-                                    strike_with_type[:-1], type_option)
-                if result is None:
-                    await ctx.send(f"Trade {symbol} is already opened")
-                    return
+                if is_avg:
+                    if type_option not in ["C", "P"]:
+                        await ctx.send("AVG is only allowed for options (C or P).")
+                        return
+                    if not is_trade_open(user_name, symbol, formatted_date, strike_with_type[:-1], type_option):
+                        await ctx.send(f"Trade {symbol} {date_str} {strike_with_type} must be open to average down.")
+                        return
+                    result = avg_down_trade(user_name, symbol, float(price), avg_qty, formatted_date, strike_with_type[:-1], type_option)
+                    if result is None:
+                        await ctx.send(f"Trade {symbol} {date_str} {strike_with_type} is not open")
+                        return
+                    if result is False:
+                        await ctx.send(f"Cannot average down {symbol} {date_str} {strike_with_type} more than 2 times.")
+                        return
+                    avg_entry_price, _ = result
+                    closing_price = None  # No closing price for AVG
+                else:
+                    result = open_trade(user_name, symbol, float(price), 1, formatted_date, strike_with_type[:-1], type_option)
+                    if result is None:
+                        await ctx.send(f"Trade {symbol} is already opened")
+                        return
+                    avg_entry_price, closing_price = result
             elif ctx.invoked_with.upper() in ["STC", "BTC"]:
                 user_name = ctx.author.name
+                if is_avg:
+                    await ctx.send("AVG is not allowed for STC or BTC commands.")
+                    return
                 if is_trim:
                     if type_option not in ["C", "P"]:
                         await ctx.send("Trim is only allowed for options (C or P).")
                         return
-                    result = trim_trade(user_name, symbol, float(price), formatted_date,
-                                        strike_with_type[:-1], type_option)
-                    print(result)
+                    result = trim_trade(user_name, symbol, float(price), formatted_date, strike_with_type[:-1], type_option)
                     if result is None:
                         await ctx.send(f"Trade {symbol} {date_str} {strike_with_type} is not open")
                         return
                     if result is False:
                         await ctx.send(f"Cannot trim {symbol} {date_str} {strike_with_type} more than 4 times. Please close the trade.")
                         return
+                    avg_entry_price, _ = result
+                    closing_price = float(price)  # Use trim price as closing price for display
                 else:
-                    result = close_trade(user_name, symbol, float(price), formatted_date,
-                                        strike_with_type[:-1], type_option)
+                    result = close_trade(user_name, symbol, float(price), formatted_date, strike_with_type[:-1], type_option)
                     if result is None:
                         await ctx.send(f"Trade {symbol} {date_str} {strike_with_type} is not open")
                         return
-            opening_price, closing_price = result
-            await ctx.send(f"{ctx.invoked_with.upper()} {symbol} {date_str} {strike_with_type} @ {price} {'trim' if is_trim else ''}")
+                    avg_entry_price, closing_price = result
+            await ctx.send(f"{ctx.invoked_with.upper()} {symbol} {date_str} {strike_with_type} @ {price} {'trim' if is_trim else ''}{'AVG ' + str(avg_qty) if is_avg else ''}")
             embed = build_embed(
                 ctx,
                 symbol,
@@ -269,15 +318,16 @@ async def order_command(ctx, ticker: str, *args):
                 direction_label,
                 extra=f"{date_str} {strike_with_type}",
                 is_long=is_long,
-                opening_price=opening_price,
-                closing_price=float(price), 
-                trim=f"{'trim' if is_trim else ''}"
+                avg_entry_price=avg_entry_price,
+                closing_price=closing_price,
+                trim=f"{'trim' if is_trim else ''}",
+                avg=f"{'AVG ' + str(avg_qty) if is_avg else ''}"
             )
             await ctx.send(embed=embed)
             return
 
         else:
-            await ctx.send("Invalid format. Use one of:\n- BTO AAPL @ M\n- BTO SPX 8/4/25 6300P @ M\n- STC SPX 8/4/25 6000C @ M trim")
+            await ctx.send("Invalid format. Use one of:\n- BTO AAPL @ M\n- BTO SPX 8/4/25 6300P @ M AVG 230\n- STC SPX 8/4/25 6000C @ M trim")
             return
 
     except Exception as e:
@@ -287,13 +337,14 @@ async def order_command(ctx, ticker: str, *args):
 async def error_type(ctx, error):
     if isinstance(error, commands.errors.MissingRequiredArgument):
         cmd = ctx.invoked_with.upper()
-        await ctx.send(f"""Add arguments for ticker date strike @ price [trim] like this:
+        await ctx.send(f"""Add arguments for ticker date strike @ price [trim | AVG qty] like this:
                        {cmd} SPX 12/25/25 7000C @ 10
                        {cmd} SPX 12/25/25 7000C @ M trim
+                       {cmd} SPX 12/25/25 7000C @ M AVG 230
                        {cmd} /ES @ M
                        {cmd} TSLA @ 342.43""")
 
-@bot.command(name="#stats")
+@bot.command(name="stats")
 async def stats_command(ctx, *, args):
     try:
         # Parse arguments: expecting "<username> <timeframe> <status>"
@@ -330,35 +381,47 @@ async def stats_command(ctx, *, args):
             date = trade["date"] if trade["date"] else ""
             strike = trade["strike"] if trade["strike"] else ""
             price = trade["price"]
+            qty = trade["qty"]
             is_long = trade["type"] == "L" or trade["type"] == "C"
             timestamp = datetime.datetime.strptime(trade["timestamp"], "%Y-%m-%d %H:%M:%S").strftime("%m/%d/%Y")
+            # Calculate average entry price
+            prices = [(price, qty)]
+            if trade["avg_down1"] is not None:
+                prices.append((trade["avg_down1"], trade["avg_down1_qty"]))
+            if trade["avg_down2"] is not None:
+                prices.append((trade["avg_down2"], trade["avg_down2_qty"]))
+            total_qty = sum(q for _, q in prices)
+            avg_entry_price = sum(p * q for p, q in prices) / total_qty if total_qty > 0 else price
+
             if not trade["date"]:
-                trade_str = f"{ticker} {strike} @ {price:.2f} ({timestamp})"
+                trade_str = f"{ticker} {strike} @ {avg_entry_price:.2f} ({timestamp})"
             else:
-                trade_str = f"{ticker} {date} {strike}{trade['type']} @ {price:.2f}"
+                trade_str = f"{ticker} {date} {strike}{trade['type']} @ {avg_entry_price:.2f}"
 
             if trade["opened"] == 0:
                 try:
-                    opening_price = trade["price"]
                     prices = [p for p in [trade["trim1"], trade["trim2"], trade["trim3"], trade["trim4"], trade["closing_price"]] if p is not None]
                     avg_exit_price = sum(prices) / len(prices) if prices else None
 
                     if avg_exit_price is not None:
                         if '/' in ticker:
-                            change = (avg_exit_price - opening_price) if is_long else (opening_price - avg_exit_price)
+                            change = (avg_exit_price - avg_entry_price) if is_long else (avg_entry_price - avg_exit_price)
                             trade_str += f" PnL: {'+' if change >= 0 else '-'}{abs(change):.2f}pts"
                         else:
-                            change = ((avg_exit_price - opening_price) / opening_price * 100) if is_long else ((opening_price - avg_exit_price) / opening_price * 100)
+                            change = ((avg_exit_price - avg_entry_price) / avg_entry_price * 100) if is_long else ((avg_entry_price - avg_exit_price) / avg_entry_price * 100)
                             trade_str += f" PnL: {'+' if change >= 0 else '-'}{abs(change):.2f}%"
                     else:
                         trade_str += " PnL: N/A"
                 except ZeroDivisionError:
                     trade_str += " PnL: N/A"
             else:
-                # Include trims for open trades
+                # Include trims and avg-downs for open trades
                 trims = [p for p in [trade["trim1"], trade["trim2"], trade["trim3"], trade["trim4"]] if p is not None]
                 if trims:
                     trade_str += f" Trims: {', '.join(f'{p:.2f}' for p in trims)}"
+                avg_downs = [p for p in [(trade["avg_down1"], trade["avg_down1_qty"]), (trade["avg_down2"], trade["avg_down2_qty"])] if p[0] is not None]
+                if avg_downs:
+                    trade_str += f" Avg Downs: {', '.join(f'{p:.2f} ({q})' for p, q in avg_downs)}"
                 trade_str += " (OPEN)"
             
             trade_list.append(trade_str)
@@ -381,25 +444,33 @@ async def stats_command(ctx, *, args):
                 if trade["opened"] == 1:
                     continue
                 try:
-                    opening_price = trade["price"]
+                    price = trade["price"]
+                    qty = trade["qty"]
+                    prices = [(price, qty)]
+                    if trade["avg_down1"] is not None:
+                        prices.append((trade["avg_down1"], trade["avg_down1_qty"]))
+                    if trade["avg_down2"] is not None:
+                        prices.append((trade["avg_down2"], trade["avg_down2_qty"]))
+                    total_qty = sum(q for _, q in prices)
+                    avg_entry_price = sum(p * q for p, q in prices) / total_qty if total_qty > 0 else price
                     is_long = trade["type"] == "L" or trade["type"] == "C"
                     if '/' in trade["ticker"]:
                         prices = [p for p in [trade["trim1"], trade["trim2"], trade["trim3"], trade["trim4"], trade["closing_price"]] if p is not None]
                         avg_exit_price = sum(prices) / len(prices) if prices else None
                         if avg_exit_price is not None:
-                            change = (avg_exit_price - opening_price) if is_long else (opening_price - avg_exit_price)
+                            change = (avg_exit_price - avg_entry_price) if is_long else (avg_entry_price - avg_exit_price)
                             futures_pnl.append(change)
                     elif trade["type"] in ["C", "P"]:
                         prices = [p for p in [trade["trim1"], trade["trim2"], trade["trim3"], trade["trim4"], trade["closing_price"]] if p is not None]
                         avg_exit_price = sum(prices) / len(prices) if prices else None
                         if avg_exit_price is not None:
-                            change = ((avg_exit_price - opening_price) / opening_price * 100) if is_long else ((opening_price - avg_exit_price) / opening_price * 100)
+                            change = ((avg_exit_price - avg_entry_price) / avg_entry_price * 100) if is_long else ((avg_entry_price - avg_exit_price) / avg_entry_price * 100)
                             options_pnl.append(change)
                     elif trade["type"] in ["S", "L"]:
                         prices = [p for p in [trade["trim1"], trade["trim2"], trade["trim3"], trade["trim4"], trade["closing_price"]] if p is not None]
                         avg_exit_price = sum(prices) / len(prices) if prices else None
                         if avg_exit_price is not None:
-                            change = ((avg_exit_price - opening_price) / opening_price * 100) if is_long else ((opening_price - avg_exit_price) / opening_price * 100)
+                            change = ((avg_exit_price - avg_entry_price) / avg_entry_price * 100) if is_long else ((avg_entry_price - avg_exit_price) / avg_entry_price * 100)
                             stocks_pnl.append(change)
                 except (ZeroDivisionError, TypeError):
                     continue
@@ -497,7 +568,7 @@ async def close_expiring_options():
                 continue
 
             # Send notification
-            opening_price, closing_price = result
+            avg_entry_price, closing_price = result
             command = "STC" if type_opt == "C" else "BTC"
             direction_label, is_long = get_order_direction(command)
             embed = build_embed(
@@ -508,7 +579,7 @@ async def close_expiring_options():
                 direction_label,
                 extra=f"{date} {strike}{type_opt}",
                 is_long=is_long,
-                opening_price=opening_price,
+                avg_entry_price=avg_entry_price,
                 closing_price=closing_price
             )
             await channel.send(f"{command} {ticker} {date} {strike}{type_opt} @ {closing_price:.2f}")
@@ -526,9 +597,8 @@ async def on_command_error(ctx, error):
 
 @bot.event
 async def on_ready():
-    print(f"Logged in {bot.user}")
+    print(f"Estamos dentro {bot.user}")
     if not close_expiring_options.is_running():
         close_expiring_options.start()
-
 
 bot.run(DISCORD_TOKEN)
