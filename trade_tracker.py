@@ -530,13 +530,13 @@ async def close_expiring_options():
             print("No valid Discord channel found for notifications.")
             return
 
-        for trade in trades:
-            user = trade["user"]
-            ticker = trade["ticker"]
-            date = trade["date"]
-            strike = trade["strike"]
-            type_opt = trade["type"]
-            opening_price = trade["price"]
+        for i in range(len(trades)):
+            user = trades[i][0]
+            ticker = trades[i][1]
+            date = trades[i][2]
+            strike = trades[i][3]
+            type_opt = trades[i][4]
+            opening_price = trades[i][5]
 
             # Fetch the last price from Tastytrade
             exp_date = datetime.datetime.strptime(date, "%m/%d/%y").date()
@@ -602,3 +602,4 @@ async def on_ready():
         close_expiring_options.start()
 
 bot.run(DISCORD_TOKEN)
+
