@@ -334,7 +334,7 @@ def get_open_options_expiring_today():
             query = '''
             SELECT user, ticker, date, strike, type, price, qty
             FROM trades
-            WHERE opened=1 AND type IN ('C', 'P') AND date<=?
+            WHERE opened=1 AND type IN ('C', 'P') AND date==?
             '''
             cursor.execute(query, (today,))
             trades = cursor.fetchall()
@@ -343,3 +343,4 @@ def get_open_options_expiring_today():
     except sqlite3.Error as e:
         print(f"Database error in get_open_options_expiring_today: {e}")
         return []
+
