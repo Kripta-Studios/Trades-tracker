@@ -548,7 +548,7 @@ async def close_expiring_options():
                 "upper_strike": str(float(strike) + 1)
             }
             data, _ = await tasty_data(session, options_request=options_request)
-            match = next((item for item in data if item["strike"] == str(strike) and type_opt in item["symbol"]), None)
+            match = next((item for item in data if str(strike) in item["strike"] and type_opt in item["symbol"]), None)
             if not match:
                 print(f"Option {ticker} {date} {strike}{type_opt} not found in Tastytrade.")
                 closing_price = 0
@@ -602,4 +602,5 @@ async def on_ready():
         close_expiring_options.start()
 
 bot.run(DISCORD_TOKEN)
+
 
