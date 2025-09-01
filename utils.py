@@ -405,7 +405,7 @@ def get_future_ticker(symbol: str, current_date: datetime.datetime = None, month
         current_date = datetime.datetime.now(ZoneInfo(tz))
 
     symbol = symbol.upper().lstrip("/")  # elimina prefijo "/" si existe
-
+    is_GC = False
     # Contratos con vencimientos mensuales
     monthly_contracts = {
         'CL', 'QM', 'BZ',      # Petróleo
@@ -432,12 +432,14 @@ def get_future_ticker(symbol: str, current_date: datetime.datetime = None, month
         if current_date > this_third_friday:
             next_month = current_date.month + 2
         else:
-            next_month = this_third_friday.month
+            next_month = this_third_friday.month + 1
 
         year = current_date.year
         if next_month > 12:
             next_month -= 12
             year += 1
+        if is_GC:
+            next_month += 2
 
         code = month_codes[next_month]
 
@@ -486,5 +488,6 @@ def extract_base_symbol(future_ticker: str) -> str:
             return ticker[:i]  # Devuelve todo lo anterior al mes
 
     raise ValueError(f"No se pudo extraer símbolo base de: {ticker}")
+
 
 
