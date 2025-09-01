@@ -125,10 +125,10 @@ async def order_command(ctx, ticker: str, *args):
                 price = "m"
             
             if '/' in symbol:
-                symbol = get_future_ticker(symbol)
+                symbol_tastytrade = get_future_ticker(symbol)
 
-            _, spot_prices = await tasty_data(session, equities_ticker=[symbol])
-            match = next((item for item in spot_prices if item["symbol"] == symbol), None)
+            _, spot_prices = await tasty_data(session, equities_ticker=[symbol_tastytrade])
+            match = next((item for item in spot_prices if item["symbol"] == symbol_tastytrade), None)
             if not match:
                 await ctx.send("Ticker not found.")
                 return
@@ -602,5 +602,6 @@ async def on_ready():
         close_expiring_options.start()
 
 bot.run(DISCORD_TOKEN)
+
 
 
