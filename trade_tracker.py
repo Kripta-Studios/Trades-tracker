@@ -245,7 +245,15 @@ async def order_command(ctx, ticker: str, *args):
             }
 
             data, _ = await tasty_data(session, options_requested=options_request)
-            match = next((item for item in data if item["strike"] == options_request["lower_strike"] and type_option in item["symbol"]), None)
+
+            def is_type_option(symbol: str, type_option: str) -> bool:
+                i = len(symbol) - 1
+                while i >= 0 and symbol[i].isdigit():
+                    i -= 1
+                suffix = symbol[i:].lower()
+                return type_option.lower() in suffix
+            
+            match = next((item for item in data if item["strike"] == options_request["lower_strike"] and is_type_option(item["symbol"], type_option)), None)
             if not match:
                 await ctx.send("Option not found.")
                 return
@@ -548,7 +556,16 @@ async def close_expiring_options():
                 "upper_strike": str(float(strike) + 1)
             }
             data, _ = await tasty_data(session, options_request=options_request)
-            match = next((item for item in data if str(strike) in item["strike"] and type_opt in item["symbol"]), None)
+
+            def is_type_option(symbol: str, type_option: str) -> bool:
+                i = len(symbol) - 1
+                while i >= 0 and symbol[i].isdigit():
+                    i -= 1
+                suffix = symbol[i:].lower()
+                return type_option.lower() in suffix
+
+            
+            match = next((item for item in data if str(strike) in item["strike"] and is_type_option(item["symbol"], type_option)), None)
             if not match:
                 print(f"Option {ticker} {date} {strike}{type_opt} not found in Tastytrade.")
                 closing_price = 0
@@ -602,6 +619,7 @@ async def on_ready():
         close_expiring_options.start()
 
 bot.run(DISCORD_TOKEN)
+
 
 
 
