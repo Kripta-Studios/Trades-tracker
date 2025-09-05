@@ -264,7 +264,7 @@ async def order_command(ctx, ticker: str, *args):
                 if price == "None":
                     price = market
 
-            if float(price) < float(match.get("mid")) * 0.9 or float(price) > float(match.get("mid")) * 1.1:
+            if float(price) < float(match.get("mid")) * 0.9 or float(price) > float(match.get("mid")) * 1.1 and price != match.get("last"):
                 await ctx.send(f"Your price {price} for {symbol} {strike_with_type} is too far from current market {market}, use @ m or the current price")
                 return
             
@@ -619,6 +619,7 @@ async def on_ready():
         close_expiring_options.start()
 
 bot.run(DISCORD_TOKEN)
+
 
 
 
