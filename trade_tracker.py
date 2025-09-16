@@ -248,7 +248,7 @@ async def order_command(ctx, ticker: str, *args):
 
             def is_type_option(symbol: str, type_option: str) -> bool:
                 i = len(symbol) - 1
-                while i >= 0 and symbol[i].isdigit():
+                while i >= 0 and (symbol[i].isdigit() or symbol[i] == "."):
                     i -= 1
                 suffix = symbol[i:].lower()
                 return type_option.lower() in suffix
@@ -619,6 +619,7 @@ async def on_ready():
         close_expiring_options.start()
 
 bot.run(DISCORD_TOKEN)
+
 
 
 
