@@ -253,7 +253,7 @@ async def order_command(ctx, ticker: str, *args):
                 suffix = symbol[i:].lower()
                 return type_option.lower() in suffix
             
-            match = next((item for item in data if item["strike"] == options_request["lower_strike"] and is_type_option(item["symbol"], type_option)), None)
+            match = next((item for item in data if item["strike"] == options_request["lower_strike"] and is_type_option(item["symbol"], type_option) and item["ticker"] != "SPX"), None)
             if not match:
                 await ctx.send("Option not found.")
                 return
@@ -619,6 +619,7 @@ async def on_ready():
         close_expiring_options.start()
 
 bot.run(DISCORD_TOKEN)
+
 
 
 
