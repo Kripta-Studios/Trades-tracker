@@ -8,5 +8,7 @@ python trade_tracker.py
 ```
 BTO /ES @ m
 STC /ES @ 6000
+BTO NDX 2/12/26 25000C @ 15.0
+BTO SPX 2/12/26 6900C @ M
 
-#stats myuserid weekly all
+stats myuserid weekly all
