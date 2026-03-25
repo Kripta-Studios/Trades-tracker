@@ -686,6 +686,17 @@ async def close_expiring_options():
         print(f"Error in close_expiring_options: {e}")
 
 @bot.event
+async def on_message(message):
+    # Ignore our own messages to avoid loops
+    if message.author == bot.user:
+        return
+    
+    # Process commands from other bots or webhooks
+    ctx = await bot.get_context(message)
+    if ctx.valid:
+        await bot.invoke(ctx)
+
+@bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, CommandNotFound):
         return
